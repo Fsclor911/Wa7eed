@@ -1119,12 +1119,204 @@ local antiCopyNoModThread = nil
 local commandFieldActive = false
 local commandFieldGui = nil
 
--- متغيرات بانق تشويش الجديدة المعدلة
-local skidFlingActive = false
-local skidFlingConnection = nil
-local skidFlingTarget = nil
-local SIMPLE_OFFSET = Vector3.new(0,0.5,0)
+-- =============================================
+-- نظام بانق تشويش الجديد والمعدل
+-- =============================================
+local newSkidFlingActive = false
+local newSkidFlingTarget = nil
 local IsFlinging = false
+local SIMPLE_OFFSET = Vector3.new(0,0.5,0)
+
+local function GetPlayer(name)
+    if not name then return nil end
+    name = name:lower()
+    for _,p in next, Players:GetPlayers() do
+        if p ~= player then
+            if p.Name:lower():match("^"..name) or (p.DisplayName and p.DisplayName:lower():match("^"..name)) then
+                return p
+            end
+        end
+    end
+end
+
+local function findTargetParts(tChar)
+    if not tChar then return end
+    local THum = tChar:FindFirstChildOfClass("Humanoid")
+    local TRoot = THum and THum.RootPart
+    local THead = tChar:FindFirstChild("Head")
+    local Accessory = tChar:FindFirstChildOfClass("Accessory")
+    local Handle = Accessory and Accessory:FindFirstChild("Handle")
+    return THum, TRoot, THead, Handle
+end
+
+local function FPos(RootPart, Base, rotCFrame, angle)
+    local offset = Vector3.new(math.cos(angle/1e10)*0.1, SIMPLE_OFFSET.Y, math.sin(angle/1e10)*0.1)
+    local targetCF = Base.CFrame + offset
+    RootPart.CFrame = targetCF * rotCFrame
+    if RootPart.Parent and RootPart.Parent:IsA("Model") then
+        pcall(function()
+            RootPart.Parent:SetPrimaryPartCFrame(targetCF * rotCFrame)
+        end)
+    end
+    RootPart.Velocity = Vector3.new(9e7,9e8,9e7)
+    RootPart.RotVelocity = Vector3.new(9e8,9e8,9e8)
+end
+
+local function SFBasePart(RootPart, THum, TargetPlayer, BasePart)
+    local Angle = 0
+    local ANG_INC = 5e10
+    local patterns = {
+        function(a) return CFrame.Angles(math.rad(a),math.rad(a),math.rad(a)) end,
+        function(a) return CFrame.Angles(math.rad(a*2),math.rad(a*3),math.rad(a*5)) end,
+        function(a) return CFrame.Angles(math.rad(math.cos(a/1e7)*5e10),math.rad(a),math.rad(math.cos(a/1e7)*5e10)) end,
+        function(a) return CFrame.Angles(math.rad(math.log(a/1e8+1)*5e10),math.rad(math.log(a/1e8+1)*5e10),math.rad(math.log(a/1e8+1)*5e10)) end,
+        function(a) return CFrame.fromAxisAngle(Vector3.new(math.sin(a/1e7),math.cos(a/1e7),math.tan(a/1e7)).unit, math.rad(a*5e11)) end,
+        function(a) return CFrame.Angles(math.rad(math.sin(a/1e7)*math.cos(a/5e6)*5e10),math.rad(math.cos(a/1e7)*math.sin(a/5e6)*5e10),math.rad(math.sin(a/2e7)*5e10)) end,
+        function(a) return CFrame.Angles(math.rad((a%360)*5e10),0,0) end,
+        function(a) return CFrame.Angles(0,math.rad((a%360)*5e10),0) end,
+        function(a) return CFrame.Angles(0,0,math.rad((a%360)*5e10)) end,
+        function(a) return CFrame.Angles(math.rad((math.pow((a%360)+1,3))*5e8),math.rad((math.pow((a%360)+1,3))*5e8),math.rad((math.pow((a%360)+1,3))*5e8)) end,
+    }
+    
+    while newSkidFlingActive and TargetPlayer == newSkidFlingTarget do
+        if not RootPart or not THum or not TargetPlayer.Character or THum.Health <= 0 then break end
+        Angle = Angle + ANG_INC
+        for _,gen in ipairs(patterns) do
+            if not newSkidFlingActive or TargetPlayer ~= newSkidFlingTarget then break end
+            FPos(RootPart, BasePart, gen(Angle), Angle)
+            task.wait(0.001)
+            if not RootPart or not THum or not TargetPlayer.Character or THum.Health <= 0 then break end
+        end
+    end
+end
+
+local function NewSkidFling(TargetPlayer)
+    if not TargetPlayer or IsFlinging then return end
+    IsFlinging = true
+    
+    local Character = player.Character
+    local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+    local RootPart = Humanoid and Humanoid.RootPart
+    if not (Character and Humanoid and RootPart) then IsFlinging=false; return end
+
+    local TChar = TargetPlayer.Character
+    if not TChar then IsFlinging=false; return end
+    local THum, TRoot, THead, Handle = findTargetParts(TChar)
+
+    getgenv().OldPos = RootPart.CFrame
+    workspace.CurrentCamera.CameraSubject = THead or Handle or (THum and THum) or Humanoid
+
+    if not TChar:FindFirstChildWhichIsA("BasePart") then IsFlinging=false; return end
+
+    workspace.FallenPartsDestroyHeight = 0/0
+    local BV = Instance.new("BodyVelocity")
+    BV.Name="EpixVel"; BV.Parent=RootPart; BV.Velocity=Vector3.new(9e8,9e8,9e8); BV.MaxForce=Vector3.new(math.huge,math.huge,math.huge)
+    Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated,false)
+
+    local BasePartToFling
+    if TRoot and THead then
+        BasePartToFling = ((TRoot.CFrame.p - THead.CFrame.p).Magnitude>5) and THead or TRoot
+    else
+        BasePartToFling = TRoot or THead or Handle
+    end
+
+    if not BasePartToFling then
+        BV:Destroy()
+        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated,true)
+        workspace.CurrentCamera.CameraSubject = Humanoid
+        IsFlinging=false
+        return
+    end
+
+    task.spawn(function()
+        SFBasePart(RootPart, THum, TargetPlayer, BasePartToFling)
+        BV:Destroy()
+        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated,true)
+        workspace.CurrentCamera.CameraSubject = Humanoid
+
+        local old = getgenv().OldPos or CFrame.new(Vector3.new(0,5,0))
+        local FPDH = getgenv().FPDH or workspace.FallenPartsDestroyHeight
+        repeat
+            pcall(function()
+                RootPart.CFrame = old * CFrame.new(SIMPLE_OFFSET)
+                Character:SetPrimaryPartCFrame(old * CFrame.new(SIMPLE_OFFSET))
+                Humanoid:ChangeState("GettingUp")
+                for _,v in pairs(Character:GetChildren()) do
+                    if v:IsA("BasePart") then v.Velocity, v.RotVelocity = Vector3.new(), Vector3.new() end
+                end
+            end)
+            task.wait()
+        until (RootPart.Position - old.p).Magnitude < 25
+        workspace.FallenPartsDestroyHeight = FPDH
+        IsFlinging = false
+    end)
+end
+
+local function StartNewSkidFling()
+    if not currentVictim then return end
+    
+    local targetPlayer = GetPlayer(currentVictim)
+    if not targetPlayer then return end
+    
+    newSkidFlingActive = true
+    newSkidFlingTarget = targetPlayer
+    NewSkidFling(targetPlayer)
+end
+
+local function StopNewSkidFling()
+    newSkidFlingActive = false
+    newSkidFlingTarget = nil
+    IsFlinging = false
+    
+    -- إعادة الإعدادات الأصلية
+    if player.Character then
+        local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+        local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
+        
+        if humanoid then
+            humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+            workspace.CurrentCamera.CameraSubject = humanoid
+        end
+        
+        if rootPart then
+            rootPart.Velocity = Vector3.new(0, 0, 0)
+            rootPart.RotVelocity = Vector3.new(0, 0, 0)
+        end
+    end
+    
+    workspace.FallenPartsDestroyHeight = getgenv().OriginalFPDH or -500
+end
+
+local function toggleNewSkidFling()
+    if newSkidFlingActive then
+        StopNewSkidFling()
+        buttonInstances["skidFling"].Text = "بانق تشويش"
+        buttonInstances["skidFling"].BackgroundColor3 = Color3.new(0, 0, 0)
+    else
+        if not currentVictim then return end
+        
+        getgenv().OriginalFPDH = workspace.FallenPartsDestroyHeight
+        buttonInstances["skidFling"].Text = "بانق تشويش ✅"
+        buttonInstances["skidFling"].BackgroundColor3 = Color3.new(0, 0.5, 0)
+        StartNewSkidFling()
+    end
+end
+
+-- إعادة التشغيل التلقائي عند تغيير الضحية
+local function checkNewSkidFlingTarget()
+    if newSkidFlingActive and currentVictim then
+        local newTarget = GetPlayer(currentVictim)
+        if newTarget and newTarget ~= newSkidFlingTarget then
+            StopNewSkidFling()
+            wait(0.1)
+            StartNewSkidFling()
+        end
+    end
+end
+
+-- =============================================
+-- نهاية نظام بانق تشويش الجديد
+-- =============================================
 
 -- قائمة الأسماء المحمية المحدثة
 local protectedUsernames = {
@@ -1234,6 +1426,9 @@ local function updateVictimInfo(victimPlayer)
         
         currentVictim = victimPlayer.Name
         lastVictim = victimPlayer.Name
+        
+        -- التحقق من تغيير الهدف لبانق تشويش
+        checkNewSkidFlingTarget()
         
         -- إشعار تحديد الضحية
         showNotification("✅ تم تحديد الضحية: " .. victimPlayer.Name, {
@@ -1841,176 +2036,6 @@ local function toggleHeadSuck()
     end
 end
 
--- وظائف بانق تشويش المعدلة حسب الطلب الجديد
-local function findTargetParts(tChar)
-    if not tChar then return end
-    local THum = tChar:FindFirstChildOfClass("Humanoid")
-    local TRoot = THum and THum.RootPart
-    local THead = tChar:FindFirstChild("Head")
-    local Accessory = tChar:FindFirstChildOfClass("Accessory")
-    local Handle = Accessory and Accessory:FindFirstChild("Handle")
-    return THum, TRoot, THead, Handle
-end
-
-local function FPos(RootPart, Base, rotCFrame, angle)
-    local offset = Vector3.new(math.cos(angle/1e10)*0.1, SIMPLE_OFFSET.Y, math.sin(angle/1e10)*0.1)
-    local targetCF = Base.CFrame + offset
-    RootPart.CFrame = targetCF * rotCFrame
-    if RootPart.Parent and RootPart.Parent:IsA("Model") then
-        pcall(function()
-            RootPart.Parent:SetPrimaryPartCFrame(targetCF * rotCFrame)
-        end)
-    end
-    RootPart.Velocity = Vector3.new(9e7,9e8,9e7)
-    RootPart.RotVelocity = Vector3.new(9e8,9e8,9e8)
-end
-
-local function SFBasePart(RootPart, THum, TargetPlayer, BasePart)
-    local Angle = 0
-    local ANG_INC = 5e10
-    local patterns = {
-        function(a) return CFrame.Angles(math.rad(a),math.rad(a),math.rad(a)) end,
-        function(a) return CFrame.Angles(math.rad(a*2),math.rad(a*3),math.rad(a*5)) end,
-        function(a) return CFrame.Angles(math.rad(math.cos(a/1e7)*5e10),math.rad(a),math.rad(math.cos(a/1e7)*5e10)) end,
-        function(a) return CFrame.Angles(math.rad(math.log(a/1e8+1)*5e10),math.rad(math.log(a/1e8+1)*5e10),math.rad(math.log(a/1e8+1)*5e10)) end,
-        function(a) return CFrame.fromAxisAngle(Vector3.new(math.sin(a/1e7),math.cos(a/1e7),math.tan(a/1e7)).unit, math.rad(a*5e11)) end,
-        function(a) return CFrame.Angles(math.rad(math.sin(a/1e7)*math.cos(a/5e6)*5e10),math.rad(math.cos(a/1e7)*math.sin(a/5e6)*5e10),math.rad(math.sin(a/2e7)*5e10)) end,
-        function(a) return CFrame.Angles(math.rad((a%360)*5e10),0,0) end,
-        function(a) return CFrame.Angles(0,math.rad((a%360)*5e10),0) end,
-        function(a) return CFrame.Angles(0,0,math.rad((a%360)*5e10)) end,
-        function(a) return CFrame.Angles(math.rad((math.pow((a%360)+1,3))*5e8),math.rad((math.pow((a%360)+1,3))*5e8),math.rad((math.pow((a%360)+1,3))*5e8)) end,
-    }
-    
-    skidFlingConnection = RunService.Heartbeat:Connect(function()
-        if not skidFlingActive or not RootPart or not THum or not TargetPlayer.Character or THum.Health <= 0 then 
-            return 
-        end
-        
-        Angle = Angle + ANG_INC
-        for _,gen in ipairs(patterns) do
-            if not skidFlingActive then break end
-            FPos(RootPart, BasePart, gen(Angle), Angle)
-            wait(0.001)
-            if not RootPart or not THum or not TargetPlayer.Character or THum.Health <= 0 then break end
-        end
-    end)
-end
-
-local function SkidFling(TargetPlayer)
-    if not TargetPlayer or IsFlinging then return end
-    IsFlinging = true
-    
-    local Character = player.Character
-    local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
-    local RootPart = Humanoid and Humanoid.RootPart
-    if not (Character and Humanoid and RootPart) then IsFlinging=false; return end
-
-    local TChar = TargetPlayer.Character
-    if not TChar then IsFlinging=false; return end
-    local THum, TRoot, THead, Handle = findTargetParts(TChar)
-
-    getgenv().OldPos = RootPart.CFrame
-    workspace.CurrentCamera.CameraSubject = THead or Handle or (THum and THum) or Humanoid
-
-    if not TChar:FindFirstChildWhichIsA("BasePart") then IsFlinging=false; return end
-
-    workspace.FallenPartsDestroyHeight = 0/0
-    local BV = Instance.new("BodyVelocity")
-    BV.Name="EpixVel"; BV.Parent=RootPart; BV.Velocity=Vector3.new(9e8,9e8,9e8); BV.MaxForce=Vector3.new(math.huge,math.huge,math.huge)
-    Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated,false)
-
-    local BasePartToFling
-    if TRoot and THead then
-        BasePartToFling = ((TRoot.CFrame.p - THead.CFrame.p).Magnitude>5) and THead or TRoot
-    else
-        BasePartToFling = TRoot or THead or Handle
-    end
-
-    if not BasePartToFling then
-        BV:Destroy()
-        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated,true)
-        workspace.CurrentCamera.CameraSubject = Humanoid
-        IsFlinging=false
-        return
-    end
-
-    task.spawn(function()
-        SFBasePart(RootPart, THum, TargetPlayer, BasePartToFling)
-        BV:Destroy()
-        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated,true)
-        workspace.CurrentCamera.CameraSubject = Humanoid
-
-        local old = getgenv().OldPos or CFrame.new(Vector3.new(0,5,0))
-        local FPDH = getgenv().FPDH or workspace.FallenPartsDestroyHeight
-        repeat
-            pcall(function()
-                RootPart.CFrame = old * CFrame.new(SIMPLE_OFFSET)
-                Character:SetPrimaryPartCFrame(old * CFrame.new(SIMPLE_OFFSET))
-                Humanoid:ChangeState("GettingUp")
-                for _,v in pairs(Character:GetChildren()) do
-                    if v:IsA("BasePart") then v.Velocity, v.RotVelocity = Vector3.new(), Vector3.new() end
-                end
-            end)
-            task.wait()
-        until (RootPart.Position - old.p).Magnitude < 25
-        workspace.FallenPartsDestroyHeight = FPDH
-        IsFlinging = false
-    end)
-end
-
-local function toggleSkidFling()
-    if IsFlinging then
-        -- إيقاف البانق تشويش
-        IsFlinging = false
-        skidFlingActive = false
-        if skidFlingConnection then
-            skidFlingConnection:Disconnect()
-            skidFlingConnection = nil
-        end
-        
-        -- إعادة الإعدادات الأصلية
-        if player.Character then
-            local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-            local rootPart = player.Character:FindFirstChild("HumanoidRootPart")
-            
-            if humanoid then
-                humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
-                workspace.CurrentCamera.CameraSubject = humanoid
-            end
-            
-            if rootPart then
-                rootPart.Velocity = Vector3.new(0, 0, 0)
-                rootPart.RotVelocity = Vector3.new(0, 0, 0)
-            end
-        end
-        
-        workspace.FallenPartsDestroyHeight = getgenv().OriginalFPDH or -500
-        buttonInstances["skidFling"].Text = "بانق تشويش"
-        buttonInstances["skidFling"].BackgroundColor3 = Color3.new(0, 0, 0)
-    else
-        -- تشغيل البانق تشويش
-        if not currentVictim then
-            return
-        end
-        
-        local targetPlayer = findPlayerByPartialName(currentVictim)
-        if not targetPlayer then
-            return
-        end
-        
-        skidFlingActive = true
-        skidFlingTarget = targetPlayer
-        buttonInstances["skidFling"].Text = "بانق تشويش ✅"
-        buttonInstances["skidFling"].BackgroundColor3 = Color3.new(0, 0.5, 0)
-        
-        -- حفظ الإعدادات الأصلية
-        getgenv().OriginalFPDH = workspace.FallenPartsDestroyHeight
-        
-        -- بدء التنفيذ
-        SkidFling(targetPlayer)
-    end
-end
-
 -- وظيفة الطائرة
 local function executePlaneCommand()
     if currentVictim then
@@ -2555,7 +2580,7 @@ buttonInstances["to"].MouseButton1Click:Connect(function() executeVictimCommand(
 buttonInstances["bang"].MouseButton1Click:Connect(toggleBang)
 buttonInstances["bangFront"].MouseButton1Click:Connect(toggleBangFront)
 buttonInstances["headSuck"].MouseButton1Click:Connect(toggleHeadSuck)
-buttonInstances["skidFling"].MouseButton1Click:Connect(toggleSkidFling)
+buttonInstances["skidFling"].MouseButton1Click:Connect(toggleNewSkidFling) -- تم التغيير هنا
 buttonInstances["autoReset"].MouseButton1Click:Connect(function()
     toggleAutoButton("autoReset", function() executeVictimCommand(".re") end, 2)
 end)
